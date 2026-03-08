@@ -1,10 +1,22 @@
 import yt_dlp
-import os
 import re
+import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 DOWNLOAD_DIR = Path("downloads")
+HISTORY_FILE = Path("downloads/history.json")
 
+
+# ---------------------------
+# UTILIDADES
+# ---------------------------
+
+def criar_pasta():
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+def limpar_nome(nome):
+    return re.sub(r'[\\/*?:"<>|]', "", nome)
 
 def formatar_tempo(segundos):
     if not segundos:
@@ -18,11 +30,35 @@ def formatar_tempo(segundos):
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
+def formatar_tamanho(bytes):
+    if not bytes:
+        return "Desconhecido"
 
-def limpar_nome(nome):
-    """Remove caracteres inválidos do nome do arquivo"""
-    return re.sub(r'[\\/*?:"<>|]', "", nome)
+    for unidade in ["B", "KB", "MB", "GB"]:
+        if bytes < 1024:
+            return f"{bytes:.2f} {unidade}"
+        bytes /= 1024
 
+# ---------------------------
+# HISTÓRICO
+# ---------------------------
+
+def carregar_historico():
+    if HISTORY_FILE.exists():
+        return json.loads(HISTORY_FILE.read_text())
+    return []
+
+def salvar_historico(video_id):
+    hist = carregar_historico()
+    hist.append(video_id)
+    HISTORY_FILE.write_text(json.dumps(hist, indent=2))
+
+def ja_baixado(video_id):
+    return video_id in carregar_historico()
+
+# ---------------------------
+# PROGRESSO
+# ---------------------------
 
 def progresso(d):
     if d["status"] == "downloading":
@@ -33,43 +69,44 @@ def progresso(d):
         print(f"⬇️ {percent} | 🚀 {speed} | ⏳ ETA {eta}", end="\r")
 
     elif d["status"] == "finished":
-        print("\n📦 Download concluído. Processando arquivo...")
+        print("\n📦 Download concluído. Processando...")
 
-
-def criar_pasta():
-    DOWNLOAD_DIR.mkdir(exist_ok=True)
-
+# ---------------------------
+# INFORMAÇÕES DO VÍDEO
+# ---------------------------
 
 def obter_info(url):
-    opcoes = {"quiet": True}
-
-    with yt_dlp.YoutubeDL(opcoes) as ydl:
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    print("\n📹 Informações do vídeo")
+    print("\n📹 Informações")
     print("Título :", info.get("title"))
     print("Canal  :", info.get("uploader"))
     print("Duração:", formatar_tempo(info.get("duration")))
     print("Views  :", info.get("view_count"))
+    print("Tamanho estimado:", formatar_tamanho(info.get("filesize") or info.get("filesize_approx")))
 
     return info
 
+# ---------------------------
+# ESCOLHAS
+# ---------------------------
 
 def escolher_formato():
-    print("\nEscolha o formato:")
-    print("1 - Vídeo MP4 (melhor qualidade)")
-    print("2 - Apenas áudio MP3")
+    print("\nFormato:")
+    print("1 - Vídeo MP4")
+    print("2 - Áudio MP3")
 
-    opcao = input("Opção: ").strip()
+    op = input("Escolha: ").strip()
 
-    if opcao == "2":
+    if op == "2":
         return "audio"
+
     return "video"
 
-
 def escolher_qualidade():
-    print("\nQualidade do vídeo:")
-    print("1 - Melhor disponível")
+    print("\nQualidade:")
+    print("1 - Melhor")
     print("2 - 1080p")
     print("3 - 720p")
     print("4 - 480p")
@@ -78,70 +115,105 @@ def escolher_qualidade():
 
     qualidades = {
         "1": "bestvideo+bestaudio/best",
-        "2": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "3": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "4": "bestvideo[height<=480]+bestaudio/best[height<=480]",
+        "2": "bestvideo[height<=1080]+bestaudio/best",
+        "3": "bestvideo[height<=720]+bestaudio/best",
+        "4": "bestvideo[height<=480]+bestaudio/best",
     }
 
     return qualidades.get(op, qualidades["1"])
 
+# ---------------------------
+# DOWNLOAD
+# ---------------------------
 
-def baixar_video(url, formato="video"):
+def baixar(url, formato="video"):
     criar_pasta()
 
+    base_opts = {
+        "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+        "progress_hooks": [progresso],
+        "ignoreerrors": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "writethumbnail": True,
+    }
+
     if formato == "audio":
-        ydl_opts = {
+
+        base_opts.update({
             "format": "bestaudio/best",
-            "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-            "progress_hooks": [progresso],
-            "noplaylist": True,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                     "preferredquality": "192",
                 }
-            ],
-        }
+            ]
+        })
 
     else:
+
         qualidade = escolher_qualidade()
 
-        ydl_opts = {
+        base_opts.update({
             "format": qualidade,
             "merge_output_format": "mp4",
-            "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-            "progress_hooks": [progresso],
-            "noplaylist": True,
-        }
+        })
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    with yt_dlp.YoutubeDL(base_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
 
+        if info:
+            salvar_historico(info.get("id"))
+
+# ---------------------------
+# PLAYLIST
+# ---------------------------
+
+def baixar_playlist(url, formato):
+
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    entries = info.get("entries", [])
+
+    print(f"\n📃 Playlist com {len(entries)} vídeos")
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        for video in entries:
+            if not video:
+                continue
+
+            if ja_baixado(video["id"]):
+                print(f"⏭️ Já baixado: {video['title']}")
+                continue
+
+            executor.submit(baixar, video["webpage_url"], formato)
+
+# ---------------------------
+# MAIN
+# ---------------------------
 
 def main():
-    print("🎬 ===== YouTube Downloader =====")
 
-    url = input("Cole o link do vídeo: ").strip()
+    print("🎬 ===== YouTube Downloader PRO =====")
+
+    url = input("Cole o link: ").strip()
 
     if not url:
-        print("❌ Link inválido")
+        print("❌ URL inválida")
         return
 
-    try:
-        obter_info(url)
+    info = obter_info(url)
 
-        formato = escolher_formato()
+    formato = escolher_formato()
 
-        baixar_video(url, formato)
+    if info.get("_type") == "playlist":
+        baixar_playlist(url, formato)
+    else:
+        baixar(url, formato)
 
-        print("\n🎉 Download finalizado!")
-
-    except yt_dlp.utils.DownloadError:
-        print("❌ Erro ao baixar o vídeo.")
-    except Exception as e:
-        print("❌ Erro inesperado:", e)
-
+    print("\n🎉 Finalizado!")
 
 if __name__ == "__main__":
     main()
