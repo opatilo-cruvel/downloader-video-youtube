@@ -39,6 +39,7 @@ def formatar_tamanho(bytes):
             return f"{bytes:.2f} {unidade}"
         bytes /= 1024
 
+
 # ---------------------------
 # HISTÓRICO
 # ---------------------------
@@ -56,6 +57,7 @@ def salvar_historico(video_id):
 def ja_baixado(video_id):
     return video_id in carregar_historico()
 
+
 # ---------------------------
 # PROGRESSO
 # ---------------------------
@@ -70,6 +72,7 @@ def progresso(d):
 
     elif d["status"] == "finished":
         print("\n📦 Download concluído. Processando...")
+
 
 # ---------------------------
 # INFORMAÇÕES DO VÍDEO
@@ -88,6 +91,7 @@ def obter_info(url):
 
     return info
 
+
 # ---------------------------
 # ESCOLHAS
 # ---------------------------
@@ -103,6 +107,7 @@ def escolher_formato():
         return "audio"
 
     return "video"
+
 
 def escolher_qualidade():
     print("\nQualidade:")
@@ -122,6 +127,23 @@ def escolher_qualidade():
 
     return qualidades.get(op, qualidades["1"])
 
+
+# ---------------------------
+# NOVA FUNÇÃO
+# ORGANIZAR POR CANAL
+# ---------------------------
+
+def obter_pasta_canal(info):
+
+    canal = info.get("uploader") or "Desconhecido"
+    canal = limpar_nome(canal)
+
+    pasta = DOWNLOAD_DIR / canal
+    pasta.mkdir(parents=True, exist_ok=True)
+
+    return pasta
+
+
 # ---------------------------
 # DOWNLOAD
 # ---------------------------
@@ -129,8 +151,14 @@ def escolher_qualidade():
 def baixar(url, formato="video"):
     criar_pasta()
 
+    # primeiro pega info para descobrir canal
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        info_preview = ydl.extract_info(url, download=False)
+
+    pasta_canal = obter_pasta_canal(info_preview)
+
     base_opts = {
-        "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
+        "outtmpl": f"{pasta_canal}/%(title)s.%(ext)s",
         "progress_hooks": [progresso],
         "ignoreerrors": True,
         "writesubtitles": True,
@@ -166,6 +194,7 @@ def baixar(url, formato="video"):
         if info:
             salvar_historico(info.get("id"))
 
+
 # ---------------------------
 # PLAYLIST
 # ---------------------------
@@ -189,6 +218,7 @@ def baixar_playlist(url, formato):
                 continue
 
             executor.submit(baixar, video["webpage_url"], formato)
+
 
 # ---------------------------
 # MAIN
@@ -214,6 +244,7 @@ def main():
         baixar(url, formato)
 
     print("\n🎉 Finalizado!")
+
 
 if __name__ == "__main__":
     main()
